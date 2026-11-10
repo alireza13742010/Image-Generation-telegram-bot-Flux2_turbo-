@@ -1,0 +1,1526 @@
+{
+  "name": "Telegram to local FLUX.2 (queue, progress, ratings)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Telegram → local FLUX.2 (queue, progress bar, ratings)\n\n1. Open each Telegram node and pick your bot credential.\n2. Edit the **Config** node: password (**change it from 123456 before you publish**), support contact (@AvidMechanic) and **supportChatId**: the support person's numeric Telegram ID. They must open the bot and send /myid to see it. Ratings and comments are sent there directly, with the sender's username, name and ID. The support person must press Start on the bot once, otherwise Telegram will not let the bot message them.\n3. Start `flux_queue_server.py` (uvicorn, single worker).\n4. **Publish** the workflow. Users, attempts and reviews are only saved by published runs, not test runs.\n5. **Delivery errors:** if an image cannot be sent, the reason and a likely fix are sent to `supportChatId` and stored. The support person can send /errors to the bot to see the last 8.\n6. **Password rotation:** every time you change `password` in Config and publish, ALL users are logged out and must type the NEW password (old logins stop working on their next message). A password that was used before is refused and access stays paused until you set a new one (switch off with `blockPasswordReuse` = false). Support gets one message when a change is detected.",
+        "height": 380,
+        "width": 420
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000001",
+      "name": "Sticky note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000002",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "5d2b8e41-0001-4a00-9000-0000000000b2",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000003",
+              "name": "password",
+              "value": "123456",
+              "type": "string"
+            },
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000090",
+              "name": "blockPasswordReuse",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000004",
+              "name": "supportContact",
+              "value": "@AvidMechanic",
+              "type": "string"
+            },
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000005",
+              "name": "supportChatId",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000006",
+              "name": "serverUrl",
+              "value": "http://host.docker.internal:8000",
+              "type": "string"
+            },
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000007",
+              "name": "maxAttempts",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000008",
+              "name": "lockoutMinutes",
+              "value": 10,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000009",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Decides what to do with every Telegram update: password gate, commands, prompts, ratings.\nconst cfg = $('Config').first().json;\nconst upd = $('Telegram Trigger').first().json;\nconst sd = $getWorkflowStaticData('global');       // persists between PUBLISHED executions\nconst users = sd.users || {};\nconst attempts = sd.attempts || {};\nconst support = cfg.supportContact;\nconst maxAttempts = Number(cfg.maxAttempts) || 5;\nconst lockoutMs = (Number(cfg.lockoutMinutes) || 10) * 60000;\nconst supportId = String(cfg.supportChatId || '').trim();\n\n// ───────── password rotation ─────────\n// Every login is tied to the password VERSION that was active when the user typed it. Whenever the\n// password in the Config node changes, the version goes up and every earlier login stops working:\n// each user must type the NEW password. A password that was used before is refused (blockPasswordReuse).\n// Only a salted SHA-256 fingerprint of the password is kept in the saved state, never the password itself.\nconst utf8 = (s) => {\n  const o = [];\n  for (const ch of String(s)) {\n    const c = ch.codePointAt(0);\n    if (c < 0x80) o.push(c);\n    else if (c < 0x800) o.push(0xc0 | (c >> 6), 0x80 | (c & 63));\n    else if (c < 0x10000) o.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n    else o.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n  }\n  return o;\n};\nconst sha256 = (str) => {\n  const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];\n  const H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];\n  const m = utf8(str);\n  const bits = m.length * 8;\n  m.push(0x80);\n  while (m.length % 64 !== 56) m.push(0);\n  const hi = Math.floor(bits / 0x100000000), lo = bits >>> 0;\n  m.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255, (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);\n  const rr = (x, n) => (x >>> n) | (x << (32 - n));\n  for (let i = 0; i < m.length; i += 64) {\n    const w = new Array(64);\n    for (let j = 0; j < 16; j++) w[j] = ((m[i + 4 * j] << 24) | (m[i + 4 * j + 1] << 16) | (m[i + 4 * j + 2] << 8) | m[i + 4 * j + 3]) | 0;\n    for (let j = 16; j < 64; j++) {\n      const s0 = rr(w[j - 15], 7) ^ rr(w[j - 15], 18) ^ (w[j - 15] >>> 3);\n      const s1 = rr(w[j - 2], 17) ^ rr(w[j - 2], 19) ^ (w[j - 2] >>> 10);\n      w[j] = (w[j - 16] + s0 + w[j - 7] + s1) | 0;\n    }\n    let [a, b, c, d, e, f, g, h] = H;\n    for (let j = 0; j < 64; j++) {\n      const t1 = (h + (rr(e, 6) ^ rr(e, 11) ^ rr(e, 25)) + ((e & f) ^ (~e & g)) + K[j] + w[j]) | 0;\n      const t2 = ((rr(a, 2) ^ rr(a, 13) ^ rr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;\n      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;\n    }\n    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;\n    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;\n  }\n  return H.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');\n};\n\nconst pwText = String(cfg.password ?? '');\nconst pwEmpty = !pwText.trim();\nconst blockReuse = !(cfg.blockPasswordReuse === false || String(cfg.blockPasswordReuse).toLowerCase() === 'false');\nif (!sd.pw) sd.pw = { salt: Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2), fp: null, ver: 0, since: null, history: [], reused: false, notified: true, log: [] };\nconst pw = sd.pw;\nconst pwFp = sha256(pw.salt + '|' + pwText);\nlet pendingNote = null;                                   // sent to support once, with the next reply\nif (pw.fp !== pwFp) {\n  const firstRun = !pw.fp;\n  if (!firstRun) pw.history = [...(pw.history || []), pw.fp].slice(-50);\n  pw.reused = !firstRun && !pwEmpty && pw.history.includes(pwFp);\n  pw.fp = pwFp;\n  pw.ver = (pw.ver || 0) + 1;                             // a new version logs everyone out, even when going back to an old password\n  pw.since = new Date().toISOString();\n  pw.invalidated = Object.keys(sd.users || {}).length;\n  pw.notified = false;\n  pw.log = [...(pw.log || []), { at: pw.since, ver: pw.ver, reused: pw.reused, usersLoggedOut: pw.invalidated }].slice(-10);\n}\nconst pwBlocked = pwEmpty ? 'empty' : (blockReuse && pw.reused ? 'reused' : '');\nif (!pw.notified && cfg.supportChatId) {\n  pendingNote = pwBlocked === 'reused'\n    ? '⛔ The password in Config was used before. Access is paused for everyone until you set a NEW password (blockPasswordReuse is on).'\n    : pwBlocked === 'empty'\n      ? '⛔ No password is set in Config. Access is paused until you set one.'\n      : `🔑 Password change detected (version ${pw.ver}).\\n${pw.invalidated} user(s) were logged out and must type the new password before they can use the bot.`;\n}\n\nconst cb = upd.callback_query;\nconst msg = upd.message;\nconst from = (cb ? cb.from : (msg && msg.from)) || {};\nconst chat = cb ? (cb.message && cb.message.chat) : (msg && msg.chat);\n\n// Private chats only, so the password is never typed in a group.\nif (!chat || chat.type !== 'private' || from.is_bot) {\n  return [{ json: { action: 'ignore' } }];\n}\n\nconst chatId = chat.id;\nconst userId = from.id;\nconst username = from.username ? '@' + from.username : (from.first_name || String(userId));\nconst base = {\n  chatId, userId, username,\n  handle: from.username ? '@' + from.username : '',\n  firstName: from.first_name || '',\n  lastName: from.last_name || '',\n  lang: from.language_code || '',\n};\nconst reply = (text, extra = {}) => {\n  const note = (pendingNote && !extra.supportText) ? { supportChatId: String(cfg.supportChatId).trim(), supportText: pendingNote } : {};\n  if (note.supportText) { pw.notified = true; pendingNote = null; }\n  return [{ json: { ...base, action: 'reply', replyText: text, ...note, ...extra } }];\n};\n// A login only counts if it was made under the CURRENT password version.\nconst rec = users[userId];\nconst stale = !!rec && rec.pwVer !== pw.ver;          // had access under an older password\nconst authorized = !!rec && !stale && !pwBlocked;\n\n// /myid works for everyone (even before login) so support can find their numeric ID.\nconst rawText = ((msg && msg.text) || '').trim();\nif (!cb && /^\\/myid(@\\w+)?$/i.test(rawText)) {\n  return reply(`🆔 Your Telegram ID: ${userId}\\nUsername: ${username}`);\n}\n\nconst HELP =\n  'Send me a description of the image you want and I will generate it.\\n\\n' +\n  '⏱ One image takes about 2 minutes. The GPU makes 1 image at a time, so extra requests wait in a queue.\\n\\n' +\n  'Commands:\\n/status - queue and GPU status\\n/review <text> - add a comment to your last rating\\n/skip - skip the comment\\n/myid - show your Telegram ID\\n/help - show this message';\n\n// ───────── button taps (star ratings) ─────────\nif (cb) {\n  const m = /^rate:([A-Za-z0-9]+):([1-5])$/.exec(cb.data || '');\n  if (!authorized || !m) return [{ json: { ...base, action: 'ignore' } }];\n  return [{ json: { ...base, action: 'rate', jobId: m[1], rating: Number(m[2]), callbackId: cb.id, messageId: cb.message.message_id } }];\n}\n\nconst text = ((msg && msg.text) || '').trim();\n\n// ───────── not logged in: password gate ─────────\nif (!authorized) {\n  const now = Date.now();\n  const a = attempts[userId] || { count: 0, lockedUntil: 0 };\n  const del = msg ? { deleteMessage: true, deleteMessageId: msg.message_id } : {};\n\n  // Access is paused until the administrator sets a new, unused password.\n  if (pwBlocked) {\n    return reply(pwBlocked === 'reused'\n      ? `⛔ Access is paused: the administrator must set a NEW password. Please contact support: ${support}`\n      : `⛔ Access is paused: no password is configured. Please contact support: ${support}`, del);\n  }\n  if (a.lockedUntil && a.lockedUntil > now) {\n    const mins = Math.ceil((a.lockedUntil - now) / 60000);\n    return reply(`⛔ Too many wrong attempts. Please try again in ${mins} min, or contact support: ${support}`, del);\n  }\n  // Step 1: always ask for the password first (this is not counted as an attempt).\n  if (!(sd.awaiting && sd.awaiting[userId]) || text === '/start') {\n    if (!sd.awaiting) sd.awaiting = {};\n    sd.awaiting[userId] = true;\n    // A message other than /start may already be the password: do not leave it in the chat.\n    return reply(stale\n      ? '🔑 The access password was changed.\\n\\nPlease type the NEW password to continue. The old password no longer works.'\n      : '🔒 Welcome! This bot is private.\\n\\nPlease type your access password to continue.',\n      (msg && text && text !== '/start') ? del : {});\n  }\n  if (!text) return reply('Please type your access password as a text message.');\n  // Step 2: check the password the user typed.\n  if (text === String(cfg.password)) {\n    if (!sd.users) sd.users = {};\n    const prev = sd.users[userId] || {};\n    sd.users[userId] = {\n      username, name: from.first_name || '', chatId,\n      firstAccessAt: prev.firstAccessAt || prev.authorizedAt || new Date().toISOString(),\n      authorizedAt: new Date().toISOString(),\n      pwVer: pw.ver,                                // valid only for this password version\n      reviews: prev.reviews || [],\n    };\n    if (sd.attempts && sd.attempts[userId]) delete sd.attempts[userId];\n    if (sd.awaiting) delete sd.awaiting[userId];\n    return reply('✅ Access granted!\\n\\n' + HELP, del);\n  }\n  const count = (a.count || 0) + 1;\n  if (!sd.attempts) sd.attempts = {};\n  if (count >= maxAttempts) {\n    sd.attempts[userId] = { count: 0, lockedUntil: now + lockoutMs };\n    return reply(`⛔ Too many wrong attempts. Please try again in ${Math.ceil(lockoutMs / 60000)} min, or contact support: ${support}`, del);\n  }\n  sd.attempts[userId] = { count, lockedUntil: 0 };\n  const left = maxAttempts - count;\n  return reply(`❌ Wrong password (${left} attempt${left === 1 ? '' : 's'} left).\\nPlease contact support: ${support}`, del);\n}\n\n// ───────── logged in ─────────\nif (!text) return reply('Please send a text description of the image you want.');\n\nconst u = sd.users[userId];\nif (u.pendingComment && u.pendingComment.until < Date.now()) delete u.pendingComment;\n\n// Saves a comment on the rated image and builds the copy that goes to support (with the user ID).\nconst saveComment = (comment) => {\n  const list = u.reviews || [];\n  const pc = u.pendingComment;\n  const rv = (pc && list.find(x => x.jobId === pc.jobId)) || list[list.length - 1];\n  if (!rv) return null;\n  rv.comment = comment.slice(0, 1000);\n  delete u.pendingComment;\n  return rv;\n};\n// Sender details that go to support with every comment.\nconst senderInfo = () => (\n  `👤 User ID: ${userId}\\n` +\n  `Username: ${base.handle || '(no username)'}\\n` +\n  `Name: ${[base.firstName, base.lastName].filter(Boolean).join(' ') || 'n/a'}\\n` +\n  `Chat ID: ${chatId}\\n` +\n  `Language: ${base.lang || 'n/a'}\\n` +\n  `Access since: ${u.authorizedAt || 'n/a'}`\n);\nconst commentReply = (rv) => reply(\n  '🙏 Thank you! Your comment was sent to our support team.',\n  supportId ? {\n    supportChatId: supportId,\n    supportText:\n      `💬 New comment\\n${senderInfo()}\\n\\n` +\n      `Rating: ${'⭐'.repeat(rv.rating)} (${rv.rating}/5)\\nComment: ${rv.comment}\\n\\n` +\n      `Prompt: ${String(rv.prompt || 'n/a').slice(0, 200)}\\nSeed: ${rv.seed ?? 'n/a'}\\nJob: ${rv.jobId}`,\n  } : {},\n);\n\nconst [cmd, ...rest] = text.split(/\\s+/);\nconst arg = rest.join(' ').trim();\n\n// A rating was just given (within 10 min): the next plain message is the comment.\nif (u.pendingComment && !text.startsWith('/')) {\n  const rv = saveComment(text);\n  if (rv) return commentReply(rv);\n}\n\nif (cmd === '/start' || cmd === '/help') return reply(HELP);\nif (cmd === '/status') return [{ json: { ...base, action: 'status' } }];\n\nif (cmd === '/skip') {\n  const had = !!u.pendingComment;\n  delete u.pendingComment;\n  return reply(had ? 'OK, no comment. Send me your next image description whenever you like.' : 'Nothing to skip. Send me an image description to start.');\n}\n\nif (cmd === '/review') {\n  if (!arg) return reply('Usage: /review <your comment about your last image>');\n  const rv = saveComment(arg);\n  if (!rv) return reply('Please rate an image first with the star buttons, then add your comment with /review <text>.');\n  return commentReply(rv);\n}\n\nif (cmd === '/reviews' && supportId && String(userId) === supportId) {\n  const all = [];\n  for (const [id, u] of Object.entries(users)) {\n    for (const r of (u.reviews || [])) all.push({ ...r, who: u.username || id });\n  }\n  all.sort((x, y) => String(y.at || '').localeCompare(String(x.at || '')));\n  const lines = all.slice(0, 15).map(r =>\n    `${r.who}: ${'⭐'.repeat(r.rating)} (${r.rating}/5)` +\n    (r.comment ? `\\n   \"${r.comment}\"` : '') +\n    (r.prompt ? `\\n   prompt: ${String(r.prompt).slice(0, 80)}` : ''));\n  const activeUsers = Object.values(users).filter(x => x.pwVer === pw.ver).length;\n  return reply(`👥 ${activeUsers} users with access (${Object.keys(users).length} ever) · ${all.length} reviews\\n\\n` + (lines.join('\\n\\n') || 'No reviews yet.'));\n}\n\nif (cmd === '/errors' && supportId && String(userId) === supportId) {\n  const log = (sd.errorLog || []).slice(-8).reverse();\n  if (!log.length) return reply('✅ No delivery errors recorded.');\n  return reply(`🛑 Last ${log.length} delivery errors\\n\\n` + log.map(e =>\n    `${e.at}\\n${e.failedAfter} · user ${e.userId} · job ${e.jobId}\\n${String(e.error).slice(0, 250)}`).join('\\n\\n'));\n}\n\nif (cmd.startsWith('/')) return reply('Unknown command. Send /help to see what I can do.');\n\nif (text.length > 1500) return reply('That prompt is too long. Please keep it under 1500 characters.');\n\nreturn [{ json: { ...base, action: 'generate', prompt: text } }];"
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000010",
+      "name": "Auth & route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "7a1c0000-0000-4000-8000-000000000011",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "reply",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "reply"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "7a1c0000-0000-4000-8000-000000000012",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "generate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "generate"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "7a1c0000-0000-4000-8000-000000000013",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "status",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "status"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "7a1c0000-0000-4000-8000-000000000014",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "rate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "rate"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000015",
+      "name": "Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000016",
+              "leftValue": "={{ $json.deleteMessage }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000017",
+      "name": "Delete user message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        680,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "deleteMessage",
+        "chatId": "={{ $json.chatId }}",
+        "messageId": "={{ $json.deleteMessageId }}"
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000018",
+      "name": "Delete user message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        920,
+        640
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.replyText }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000019",
+      "name": "Send reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000020",
+              "leftValue": "={{ !!$('Auth & route').first().json.supportText }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000021",
+      "name": "Copy to support?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Auth & route').first().json.supportChatId }}",
+        "text": "={{ $('Auth & route').first().json.supportText }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000022",
+      "name": "Notify support (comment)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        -60
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.serverUrl }}/jobs",
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prompt: $json.prompt, user: String($json.userId) }) }}"
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000023",
+      "name": "Submit job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Auth & route').first().json.chatId }}",
+        "text": "={{ '⚠️ The image server is offline right now. Please try again in a few minutes, or contact support: ' + $('Config').first().json.supportContact }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000024",
+      "name": "Server offline",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        480
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000025",
+              "leftValue": "={{ $json.accepted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000026",
+      "name": "Accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Auth & route').first().json.chatId }}",
+        "text": "={{ $json.reason === 'user_busy' ? '⏳ You already have an image in progress. Please wait until it finishes before sending a new request.' : '🚦 The queue is full right now (' + $json.queue_length + ' of ' + $json.max_queue + ' places taken). Please try again in a few minutes.' }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000027",
+      "name": "Explain rejection",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        440
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turns the server's job status into the Telegram progress message.\nconst cfg = $('Config').first().json;\nconst route = $('Auth & route').first().json;\nconst j = $input.first().json || {};\nconst run = $runIndex;\n\nconst fmt = (s) => {\n  s = Math.max(0, Math.round(Number(s) || 0));\n  const m = Math.floor(s / 60), r = s % 60;\n  return m ? `${m} min ${String(r).padStart(2, '0')} s` : `${r} s`;\n};\nconst bar = (p) => {\n  p = Math.max(0, Math.min(100, Math.round(Number(p) || 0)));\n  const n = 12, f = Math.round((p / 100) * n);\n  return '█'.repeat(f) + '░'.repeat(n - f) + ` ${p}%`;\n};\n\nconst status = j.status || 'unknown';\nconst finished = ['done', 'error', 'not_found'].includes(status) || run > 300;\nconst gpu = `🖥 GPU: ${j.max_concurrent || 1} image at a time · ${j.queue_length ?? 0} waiting in queue`;\nconst intro = run === 0 ? '📥 Request received!\\n\\n' : '';\n\nlet text;\nlet caption = '';\nif (status === 'done') {\n  // This bar is for GENERATING only; sending the picture has its own message and bar.\n  text = `✅ Image generated in ${fmt(j.total_seconds)}!\\n\\n${bar(100)}\\n📤 Sending progress is shown in the next message.`;\n  caption = `🖼 Done in ${fmt(j.total_seconds)} · seed ${j.seed}`;\n} else if (finished) {\n  text = `❌ Sorry, something went wrong while generating your image.\\nPlease try again, or contact support: ${cfg.supportContact}`;\n} else if (status === 'queued') {\n  text = `${intro}🕒 You are in the queue\\n\\n${bar(0)}\\n👥 Requests ahead of you: ${j.ahead ?? 0}\\n⏱ Estimated wait: about ${fmt(j.eta_seconds)}\\n${gpu}`;\n} else if (status === 'running') {\n  text = `${intro}🎨 ${j.stage_label || 'Working'}\\n\\n${bar(j.progress_percent)}\\n⏱ About ${fmt(j.eta_seconds)} left\\n${gpu}`;\n} else {\n  text = '⏳ Still working…';\n}\n\nlet messageId = null;\nif (run > 0) {\n  try {\n    const sent = $('Send progress message').first().json;\n    messageId = (sent.result && sent.result.message_id) ?? sent.message_id ?? null;\n  } catch (e) { /* first message not available */ }\n}\n\nlet jobId = j.job_id;\nif (!jobId) jobId = $('Submit job').first().json.job_id;\n\nreturn [{ json: { first: run === 0, finished, status, text, caption, jobId, chatId: route.chatId, messageId, totalText: fmt(j.total_seconds) } }];"
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000028",
+      "name": "Format progress",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000029",
+              "leftValue": "={{ $json.first }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000030",
+      "name": "First update?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000031",
+      "name": "Send progress message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1920,
+        140
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{ $json.chatId }}",
+        "messageId": "={{ $json.messageId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000032",
+      "name": "Update progress",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1920,
+        340
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000033",
+              "leftValue": "={{ $('Format progress').first().json.finished }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000034",
+      "name": "Finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2160,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 6,
+        "unit": "seconds"
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000035",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2160,
+        140
+      ],
+      "webhookId": "5d2b8e41-0002-4a00-9000-0000000000c3"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.serverUrl }}/jobs/{{ $('Submit job').first().json.job_id }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000036",
+      "name": "Poll job status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        140
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000037",
+              "leftValue": "={{ $('Format progress').first().json.status === 'done' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000038",
+      "name": "Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Format progress').first().json.chatId }}",
+        "text": "📤 Sending your image\n\n█░░░░░░░░░░░ 10%\n📦 Preparing it… Sending can take up to 5 minutes depending on your connection and mine.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000039",
+      "name": "Sending message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2640,
+        340
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.serverUrl }}/jobs/{{ $('Format progress').first().json.jobId }}/image",
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000040",
+      "name": "Download image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2880,
+        340
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{ $('Format progress').first().json.chatId }}",
+        "messageId": "={{ ($('Sending message').first().json.result ? $('Sending message').first().json.result.message_id : $('Sending message').first().json.message_id) }}",
+        "text": "📤 Sending your image\n\n██████░░░░░░ 50%\n⬆️ Uploading to Telegram… this can take up to 5 minutes on a slow connection.",
+        "additionalFields": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000041",
+      "name": "Show uploading",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3360,
+        160
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $('Format progress').first().json.chatId }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "={{ $('Format progress').first().json.caption }}"
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000042",
+      "name": "Send image",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3360,
+        340
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{ $('Format progress').first().json.chatId }}",
+        "messageId": "={{ ($('Sending message').first().json.result ? $('Sending message').first().json.result.message_id : $('Sending message').first().json.message_id) }}",
+        "text": "✅ Delivered!\n\n████████████ 100%\n🖼 Your image is right below.",
+        "additionalFields": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000043",
+      "name": "Show delivered",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3600,
+        340
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{ $('Format progress').first().json.chatId }}",
+        "messageId": "={{ ($('Sending message').first().json.result ? $('Sending message').first().json.result.message_id : $('Sending message').first().json.message_id) }}",
+        "text": "={{ '❌ Sorry, I could not send your image. Please try again, or contact support: ' + $('Config').first().json.supportContact + '\\n\\nError code: ' + $json.errorCode }}",
+        "additionalFields": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000044",
+      "name": "Delivery failed",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3600,
+        580
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Format progress').first().json.chatId }}",
+        "text": "How would you rate this image? Tap a star rating below 👇",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "1 ⭐",
+                    "additionalFields": {
+                      "callback_data": "={{ 'rate:' + $('Format progress').first().json.jobId + ':1' }}"
+                    }
+                  },
+                  {
+                    "text": "2 ⭐",
+                    "additionalFields": {
+                      "callback_data": "={{ 'rate:' + $('Format progress').first().json.jobId + ':2' }}"
+                    }
+                  },
+                  {
+                    "text": "3 ⭐",
+                    "additionalFields": {
+                      "callback_data": "={{ 'rate:' + $('Format progress').first().json.jobId + ':3' }}"
+                    }
+                  },
+                  {
+                    "text": "4 ⭐",
+                    "additionalFields": {
+                      "callback_data": "={{ 'rate:' + $('Format progress').first().json.jobId + ':4' }}"
+                    }
+                  },
+                  {
+                    "text": "5 ⭐",
+                    "additionalFields": {
+                      "callback_data": "={{ 'rate:' + $('Format progress').first().json.jobId + ':5' }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000045",
+      "name": "Ask for review",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3840,
+        340
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.serverUrl }}/queue",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000046",
+      "name": "Get queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        520
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Auth & route').first().json.chatId }}",
+        "text": "={{ $json.max_concurrent === undefined ? '⚠️ The image server is offline right now.' : '🖥 GPU status\\n\\nImages generated at the same time: ' + $json.max_concurrent + ' (one GPU)\\nGenerating now: ' + $json.running + '\\nWaiting in queue: ' + $json.queued + ' of ' + $json.max_queue + '\\nAverage time per image: about ' + Math.round($json.avg_seconds) + ' s' }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000047",
+      "name": "Send queue status",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        600
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.serverUrl }}/jobs/{{ $('Auth & route').first().json.jobId }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000048",
+      "name": "Get job info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        780
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Stores the star rating in the same user record that holds the username and access status.\nconst r = $('Auth & route').first().json;\nconst cfg = $('Config').first().json;\nconst info = $input.first().json || {};\nconst sd = $getWorkflowStaticData('global');\nconst supportId = String(cfg.supportChatId || '').trim();\n\nconst rec = sd.users && sd.users[r.userId];\n// Access only counts under the CURRENT password version (see Auth & route).\nconst u = rec && sd.pw && rec.pwVer === sd.pw.ver ? rec : null;\nif (!u) {\n  return [{ json: { chatId: r.chatId, messageId: r.messageId, callbackId: r.callbackId, text: 'Please send the access password first.', notifySupport: false } }];\n}\nif (!u.reviews) u.reviews = [];\n\nconst entry = {\n  jobId: r.jobId,\n  rating: r.rating,\n  at: new Date().toISOString(),\n  prompt: info.prompt || null,\n  seed: info.seed ?? null,\n  seconds: info.total_seconds ?? null,\n};\nconst idx = u.reviews.findIndex(x => x.jobId === r.jobId);\nconst updated = idx >= 0;\nif (updated) {\n  if (u.reviews[idx].comment) entry.comment = u.reviews[idx].comment;\n  u.reviews[idx] = entry;\n} else {\n  u.reviews.push(entry);\n}\nif (u.reviews.length > 200) u.reviews = u.reviews.slice(-200);\n\n// The next plain message from this user (within 10 minutes) is taken as the comment.\nu.pendingComment = { jobId: r.jobId, until: Date.now() + 10 * 60000 };\n\nconst stars = '⭐'.repeat(r.rating);\nconst text = `${updated ? 'Rating updated' : 'Thanks for rating'}! ${stars} (${r.rating}/5)\\n\\n💬 Want to tell us more? Type your comment now and I will send it to our support team (or send /skip).`;\nconst rated = u.reviews.map(x => x.rating).filter(Number.isFinite);\nconst avg = rated.length ? (rated.reduce((a, b) => a + b, 0) / rated.length).toFixed(1) : 'n/a';\nconst supportText =\n  `${updated ? '🔄 Rating updated' : '⭐ New rating'}\\n` +\n  `👤 User ID: ${r.userId}\\n` +\n  `Username: ${r.handle || '(no username)'}\\n` +\n  `Name: ${[r.firstName, r.lastName].filter(Boolean).join(' ') || 'n/a'}\\n` +\n  `Chat ID: ${r.chatId}\\n` +\n  `Language: ${r.lang || 'n/a'}\\n` +\n  `Access since: ${u.authorizedAt || 'n/a'}\\n` +\n  `Ratings from this user: ${rated.length} (average ${avg}/5)\\n\\n` +\n  `Rating: ${stars} (${r.rating}/5)\\n` +\n  `Prompt: ${String(info.prompt || 'n/a').slice(0, 200)}\\n` +\n  `Seed: ${info.seed ?? 'n/a'}\\n` +\n  `Generation time: ${info.total_seconds != null ? Math.round(info.total_seconds) + ' s' : 'n/a'}\\n` +\n  `Job: ${r.jobId}`;\n\nreturn [{ json: {\n  chatId: r.chatId, messageId: r.messageId, callbackId: r.callbackId, text,\n  notifySupport: !!supportId, supportChatId: supportId, supportText,\n} }];"
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000049",
+      "name": "Save review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        780
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "operation": "answerQuery",
+        "queryId": "={{ $json.callbackId }}",
+        "additionalFields": {
+          "text": "Thank you!"
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000050",
+      "name": "Answer button tap",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        780
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{ $('Save review').first().json.chatId }}",
+        "messageId": "={{ $('Save review').first().json.messageId }}",
+        "text": "={{ $('Save review').first().json.text }}",
+        "additionalFields": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000051",
+      "name": "Update rating message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1680,
+        780
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000052",
+              "leftValue": "={{ $('Save review').first().json.notifySupport }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000053",
+      "name": "Notify support?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Save review').first().json.supportChatId }}",
+        "text": "={{ $('Save review').first().json.supportText }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000054",
+      "name": "Notify support (rating)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1680,
+        620
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Builds a readable error log for whichever node failed (Download image or Send image).\nconst route = $('Auth & route').first().json;\nconst cfg = $('Config').first().json;\nlet fp = {};\ntry { fp = $('Format progress').first().json; } catch (e) { /* not available */ }\nconst j = $input.first().json || {};\n\nlet detail;\ntry {\n  const raw = j.error !== undefined ? j.error : j;\n  detail = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);\n} catch (e) {\n  detail = String(j.error || e);\n}\ndetail = String(detail || 'no error text');\n\nconst step = $prevNode.name;   // \"Download image\" or \"Send image\"\n\n// First matching pattern wins.\nconst hints = [\n  [/too big|too large|entity too large|PHOTO_SAVE_FILE_INVALID|IMAGE_PROCESS_FAILED/i,\n    'The image is probably over Telegram photo limits (10 MB, or width+height above 10000 px). Save it smaller or as JPEG on the server, or change Send image to sendDocument.'],\n  [/PHOTO_INVALID_DIMENSIONS/i,\n    'sendPhoto does not accept these dimensions (width+height must be 10000 or less, ratio 20 or less). Resize the image or use sendDocument.'],\n  [/binary|no data/i,\n    'Send image did not receive the file. Check that Download image is connected directly to Send image and outputs the binary property \"data\".'],\n  [/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ESOCKETTIMEDOUT/i,\n    'Could not reach the image server (or Telegram). Check serverUrl, that flux_queue_server.py is running, and that host.docker.internal works from n8n.'],\n  [/timeout|timed out/i,\n    'The request timed out. Increase the timeout on Download image / Send image, or check the connection speed.'],\n  [/403|blocked|chat not found|deactivated/i,\n    'Telegram refused delivery: the user may have blocked the bot, or the chat ID is wrong.'],\n  [/429|too many requests|retry after/i,\n    'Telegram rate limit reached. Wait a moment and try again.'],\n  [/404|not found/i,\n    'The server returned 404: the image for this job does not exist (check the /jobs/{id}/image route and the output folder).'],\n];\nconst hint = (hints.find(([re]) => re.test(detail)) || [null, 'No known pattern. See the full error text.'])[1];\n\nconst jobId = String(fp.jobId || 'unknown');\nconst entry = {\n  at: new Date().toISOString(),\n  failedAfter: step,\n  userId: route.userId,\n  username: route.username,\n  jobId,\n  error: detail.slice(0, 1500),\n  hint,\n};\n\n// 1) n8n server log   2) last 20 errors kept in workflow static data (shown by /errors)\nconsole.log('[DELIVERY ERROR]', JSON.stringify(entry));\nconst sd = $getWorkflowStaticData('global');\nsd.errorLog = [...(sd.errorLog || []), entry].slice(-20);\n\nconst errorCode = (step === 'Download image' ? 'DL' : 'TG') + '-' + jobId.slice(0, 8);\n\nreturn [{ json: {\n  ...entry,\n  errorCode,\n  supportChatId: String(cfg.supportChatId || '').trim(),\n  logText:\n    `🛑 Delivery error (${errorCode})\\n` +\n    `Step: ${step}\\nUser: ${entry.username} (${entry.userId})\\nJob: ${jobId}\\nTime: ${entry.at}\\n\\n` +\n    `Likely cause: ${hint}\\n\\nError:\\n${entry.error}`,\n} }];"
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000055",
+      "name": "Log delivery error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        580
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7a1c0000-0000-4000-8000-000000000056",
+              "leftValue": "={{ !!$json.supportChatId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000057",
+      "name": "Log to support?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3600,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.supportChatId }}",
+        "text": "={{ $json.logText }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a1c0000-0000-4000-8000-000000000058",
+      "name": "Notify support (delivery error)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3840,
+        760
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "68F6qd0UahqIptPS",
+          "name": "Telegram account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Auth & route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth & route": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete user message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete user message?": {
+      "main": [
+        [
+          {
+            "node": "Delete user message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "Copy to support?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Submit job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get queue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get job info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Copy to support?": {
+      "main": [
+        [
+          {
+            "node": "Notify support (comment)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit job": {
+      "main": [
+        [
+          {
+            "node": "Accepted?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Server offline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accepted?": {
+      "main": [
+        [
+          {
+            "node": "Format progress",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Explain rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format progress": {
+      "main": [
+        [
+          {
+            "node": "First update?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "First update?": {
+      "main": [
+        [
+          {
+            "node": "Send progress message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send progress message": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update progress": {
+      "main": [
+        [
+          {
+            "node": "Finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finished?": {
+      "main": [
+        [
+          {
+            "node": "Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Poll job status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll job status": {
+      "main": [
+        [
+          {
+            "node": "Format progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Sending message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sending message": {
+      "main": [
+        [
+          {
+            "node": "Download image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download image": {
+      "main": [
+        [
+          {
+            "node": "Show uploading",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log delivery error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send image": {
+      "main": [
+        [
+          {
+            "node": "Show delivered",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log delivery error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show delivered": {
+      "main": [
+        [
+          {
+            "node": "Ask for review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get queue": {
+      "main": [
+        [
+          {
+            "node": "Send queue status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get job info": {
+      "main": [
+        [
+          {
+            "node": "Save review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save review": {
+      "main": [
+        [
+          {
+            "node": "Notify support?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Answer button tap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer button tap": {
+      "main": [
+        [
+          {
+            "node": "Update rating message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify support?": {
+      "main": [
+        [
+          {
+            "node": "Notify support (rating)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log delivery error": {
+      "main": [
+        [
+          {
+            "node": "Delivery failed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to support?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to support?": {
+      "main": [
+        [
+          {
+            "node": "Notify support (delivery error)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
